@@ -22,4 +22,14 @@ Atente-se para gerar requisições de leitura e escrita, e que a faixa de valore
 * Tamanho mı́nimo e máximo de cada requisição (valor menor ou igual ao tamanho do bloco);
 * Número de processos concorrentes (gerados a partir do fork).
 
+## Teste
 
+O relatório deverá apresentar resultados que ilustram o funcionamento do algoritmo e sua comparação com a polı́tica FCFS, com análise e discussão dos resultados obtidos em cada caso. Como descrito na seção de Avaliação de desempenho, os dados do FCFS são obtidos da mesma execução com o módulo C-LOOK — a ordem de chegada registrada no log de depuração representa o comportamento FCFS. Não é necessário (nem correto) realizar uma execução separada com o escalonador none para obter os dados de comparação. Os casos de teste a seguir devem ser executados com o módulo C-LOOK e os resultados comparados (setores na ordem de chegada vs. setores na ordem C-LOOK):
+
+* Acesso aleatório puro: grande número de operações com endereços distribuídos uniformemente por todo o disco, alta concorrência. Discuta por que o ganho do C-LOOK em relação ao FCFS é significativo nesse padrão e como a varredura unidirecional circular contribui para isso.
+* Acesso sequencial: operações com endereços crescentes e sequenciais. Discuta por que o ganho do C-LOOK em relação ao FCFS é menor nesse padrão.
+* Fila pequena vs. fila grande: execute o caso 1 alterando o tamanho da fila entre os extremos recomendados. Analise como esse parâmetro influencia a redução de setores percorridos.
+* Timeout curto vs. timeout longo: execute o caso 1 alterando o tempo máximo de espera entre os extremos recomendados. Discuta o compromisso entre tempo de espera e eficiência do escalonamento.
+* Carga mista com predominância de escritas: repita o caso 1 com percentuais elevados de escritas. Discuta se e por que o comportamento difere do caso com predominância de leituras.
+
+Para cada caso, o relatório deve incluir: a configuração utilizada (parâmetros do módulo e da aplicação de testes), os resultados numéricos obtidos (setores percorridos com e sem reordenação), e uma discussão que explique o comportamento observado com base no funcionamento dos algoritmos.
