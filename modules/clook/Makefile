@@ -2,6 +2,7 @@ obj-m         := clook.o
 BUILDROOT_DIR := $(CURDIR)/../..
 KDIR          := $(BUILDROOT_DIR)/output/build/linux-6.12.27
 COMPILER      := $(BUILDROOT_DIR)/output/host/bin/i686-buildroot-linux-gnu-gcc
+ccflags-y     := -I$(src)/../../output/build/linux-6.12.27/block
 
 all: install
 
