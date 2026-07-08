@@ -4,7 +4,7 @@ chmod +x $BASE_DIR/target/etc/init.d/S41network-config
 cp $BASE_DIR/../apps/hello $BASE_DIR/target/usr/bin
 cp $BASE_DIR/../custom-scripts/hello $BASE_DIR/target/etc/init.d/S50hello
 
-chmod +x $BASE_DIR/target/etc/init.d/S50hell
+chmod +x $BASE_DIR/target/etc/init.d/S50hello
 
 cp $BASE_DIR/../custom-scripts/start-httpd $BASE_DIR/target/etc/init.d/S60httpd
 

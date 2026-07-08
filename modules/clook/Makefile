@@ -7,11 +7,11 @@ ccflags-y     := -I$(src)/../../output/build/linux-6.12.27/block
 all: install
 
 install: build
-        $(MAKE) -C $(KDIR) M=$$PWD modules_install INSTALL_MOD_PATH=$(BUILDROOT_DIR)/output/target
+	$(MAKE) -C $(KDIR) M=$$PWD modules_install INSTALL_MOD_PATH=$(BUILDROOT_DIR)/output/target
 
 build:
-        $(MAKE) CC=$(COMPILER) -C $(KDIR) M=$$PWD modules
+	$(MAKE) CC=$(COMPILER) -C $(KDIR) M=$$PWD modules
 
 clean:
-        $(MAKE) -C $(KDIR) M=$$PWD clean
+	$(MAKE) -C $(KDIR) M=$$PWD clean
 
