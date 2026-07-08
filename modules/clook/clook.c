@@ -130,7 +130,6 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     cd->timeout_ms = timeout_ms;
     cd->debug = debug;
 
-    /* Estado inicial */
     cd->head_position = 0;
     cd->nr_requests = 0;
 
@@ -332,7 +331,7 @@ static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx)
 }
 
 static bool clook_has_work(struct blk_mq_hw_ctx *hctx)
-{
+{ // tem coisa aqui, tem que ver ainda
     struct clook_data *cd;
     unsigned long flags;
     bool work;
@@ -355,7 +354,7 @@ static bool clook_has_work(struct blk_mq_hw_ctx *hctx)
 
 static void clook_finish_request(struct request *rq)
 {
-    return;
+    return; // tem que ver isso
 }
 
 static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer)
