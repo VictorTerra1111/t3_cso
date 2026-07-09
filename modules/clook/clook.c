@@ -21,11 +21,7 @@
 #include <linux/spinlock.h>
 #include <linux/hrtimer.h>
 
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Bruno, Joao Victor, Lucas e  Cleysso");
-MODULE_DESCRIPTION("Clook Escalonador de disco");
-MODULE_VERSION("0.0.1");
-
+// declaracoes das funcoes utilizadas 
 static int clook_init_sched(struct request_queue *q, struct elevator_type *e);
 
 static void clook_exit_sched(struct elevator_queue *e);
@@ -41,6 +37,8 @@ static void clook_finish_request(struct request *rq);
 static int __init clook_init(void);
 
 static void __exit clook_exit(void);
+
+// structs 
 
 static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer);
 
@@ -99,14 +97,19 @@ struct clook_request {
     struct list_head list;
 };
 
+// variaveis globais 
 static unsigned int queue_size = 50;
 static unsigned int timeout_ms = 50;
 static bool debug = false;
 
+// parametros requisitados
 module_param(queue_size, uint, 0644);
 module_param(timeout_ms, uint, 0644);
 module_param(debug, bool, 0644);
 
+// codigo baseado em "sleketon blk_mq elevator" disponivel no Moodle
+
+// inicia o escalonador
 static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
 {
     struct elevator_queue *eq;
@@ -165,6 +168,7 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     return 0;
 }
 
+
 static void clook_exit_sched(struct elevator_queue *e)
 {
     struct clook_data *cd;
@@ -192,6 +196,7 @@ static void clook_exit_sched(struct elevator_queue *e)
     kfree(cd);
 }
 
+// inserir novo request na lsita
 static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *list, blk_insert_t flags)
 {
     struct clook_data *cd;
@@ -379,6 +384,7 @@ static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer)
     return HRTIMER_NORESTART;
 }
 
+// sinaliza o inicio
 static int __init clook_init(void)
 {
     pr_info("C-LOOK: registrando escalonador\n");
@@ -386,6 +392,7 @@ static int __init clook_init(void)
     return elv_register(&clook);
 }
 
+// sinaliza o fim
 static void __exit clook_exit(void)
 {
     pr_info("C-LOOK: removendo escalonador\n");
@@ -394,3 +401,7 @@ static void __exit clook_exit(void)
 
 module_init(clook_init);
 module_exit(clook_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Bruno, Joao Victor, Lucas e  Cleysso");
+MODULE_DESCRIPTION("C-LOOK (Circular LOOK) I/O scheduler"); 
