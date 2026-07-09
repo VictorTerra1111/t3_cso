@@ -86,9 +86,9 @@ struct clook_data {
 
     unsigned long received;
 
-    unsigned long circular_jumps;
+    unsigned long circular_jumps; 
 
-    struct blk_mq_hw_ctx *hctx;
+    struct blk_mq_hw_ctx *hctx; // ?
 };
 
 struct clook_request {
@@ -253,9 +253,7 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
         cd->timeout_expired = false;
 
         hrtimer_cancel(&cd->timer);
-        hrtimer_start(&cd->timer,
-                      ms_to_ktime(cd->timeout_ms),
-                      HRTIMER_MODE_REL);
+        hrtimer_start(&cd->timer, ms_to_ktime(cd->timeout_ms),  HRTIMER_MODE_REL);
     }
 
     spin_unlock_irqrestore(&cd->lock, irqflags);
