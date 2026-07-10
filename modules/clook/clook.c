@@ -15,31 +15,19 @@
 #include <linux/mutex.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/mutex.h>
 #include <linux/kobject.h>
 
 #include <linux/spinlock.h>
 #include <linux/hrtimer.h>
 
-// declaracoes das funcoes utilizadas 
 static int clook_init_sched(struct request_queue *q, struct elevator_type *e);
-
 static void clook_exit_sched(struct elevator_queue *e);
-
 static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *list, blk_insert_t flags);
-
 static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx);
-
 static bool clook_has_work(struct blk_mq_hw_ctx *hctx);
-
 static void clook_finish_request(struct request *rq);
-
 static int __init clook_init(void);
-
 static void __exit clook_exit(void);
-
-// structs 
-
 static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer);
 
 static struct elevator_type clook = {
@@ -83,12 +71,10 @@ struct clook_data {
     bool first_clook;
 
     unsigned long dispatched;
-
     unsigned long received;
+    unsigned long circular_jumps;
 
-    unsigned long circular_jumps; 
-
-    struct blk_mq_hw_ctx *hctx; // ?
+    struct blk_mq_hw_ctx *hctx;
 };
 
 struct clook_request {
@@ -97,12 +83,10 @@ struct clook_request {
     struct list_head list;
 };
 
-// variaveis globais 
 static unsigned int queue_size = 50;
 static unsigned int timeout_ms = 50;
 static bool debug = false;
 
-// parametros requisitados
 module_param(queue_size, uint, 0644);
 MODULE_PARM_DESC(queue_size, "Numero de requisicoes acumuladas antes do despacho C-LOOK");
 
@@ -112,9 +96,6 @@ MODULE_PARM_DESC(timeout_ms, "Tempo maximo de espera da fila, em milissegundos")
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Habilita logs de depuracao no log do kernel");
 
-// codigo baseado em "sleketon blk_mq elevator" disponivel no Moodle
-
-// inicia o escalonador
 static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
 {
     struct elevator_queue *eq;
@@ -131,7 +112,6 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     }
 
     INIT_LIST_HEAD(&cd->queue);
-
     spin_lock_init(&cd->lock);
 
     if (queue_size == 0) {
@@ -169,7 +149,6 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     cd->hctx = NULL;
 
     hrtimer_init(&cd->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-
     cd->timer.function = clook_timer_callback;
 
     eq->elevator_data = cd;
@@ -177,7 +156,6 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     blk_queue_flag_set(QUEUE_FLAG_SQ_SCHED, q);
 
     q->nr_requests = 128;
-
     q->elevator = eq;
 
     pr_info("clook: scheduler initialized queue_size=%u timeout_ms=%u debug=%d\n",
@@ -185,7 +163,6 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
 
     return 0;
 }
-
 
 static void clook_exit_sched(struct elevator_queue *e)
 {
@@ -218,7 +195,6 @@ static void clook_exit_sched(struct elevator_queue *e)
     kfree(cd);
 }
 
-// inserir novo request na lsita
 static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *list, blk_insert_t flags)
 {
     struct clook_data *cd;
@@ -245,7 +221,7 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
             list_add_tail(&rq->queuelist, list);
             continue;
         }
-        
+
         entry->rq = rq;
         entry->sector = blk_rq_pos(rq);
 
@@ -401,6 +377,7 @@ static void clook_finish_request(struct request *rq)
 static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer)
 {
     struct clook_data *cd;
+    struct blk_mq_hw_ctx *hctx;
     unsigned long flags;
 
     cd = container_of(timer, struct clook_data, timer);
@@ -408,11 +385,12 @@ static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer)
     spin_lock_irqsave(&cd->lock, flags);
 
     cd->timeout_expired = true;
+    hctx = cd->hctx;
 
     spin_unlock_irqrestore(&cd->lock, flags);
 
-    if (cd->hctx)
-        blk_mq_run_hw_queue(cd->hctx, true);
+    if (hctx)
+        blk_mq_run_hw_queue(hctx, true);
 
     if (cd->debug)
         pr_info("clook: timeout expirado\n");
@@ -420,7 +398,6 @@ static enum hrtimer_restart clook_timer_callback(struct hrtimer *timer)
     return HRTIMER_NORESTART;
 }
 
-// sinaliza o inicio
 static int __init clook_init(void)
 {
     pr_info("C-LOOK: registrando escalonador\n");
@@ -428,7 +405,6 @@ static int __init clook_init(void)
     return elv_register(&clook);
 }
 
-// sinaliza o fim
 static void __exit clook_exit(void)
 {
     pr_info("C-LOOK: removendo escalonador\n");
@@ -440,4 +416,4 @@ module_exit(clook_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Bruno, Joao Victor, Lucas e  Cleysso");
-MODULE_DESCRIPTION("C-LOOK (Circular LOOK) I/O scheduler"); 
+MODULE_DESCRIPTION("C-LOOK (Circular LOOK) I/O scheduler");

@@ -237,6 +237,7 @@ int main(int argc, char *argv[])
                     free(allocated_buffer);
                     exit(1);
                 }
+                long req_size = min_req_size + (rand() % (max_req_size - min_req_size + 1));
 
                 if (do_io(fd, buffer, (size_t)req_size, is_write) != 0) {
                     perror(is_write ? "write" : "read");
