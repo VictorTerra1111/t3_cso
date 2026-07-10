@@ -39,7 +39,7 @@ if [ ! -x "$CC" ]; then
 fi
 
 mkdir -p "$(dirname "$APP_DST")"
-"$CC" -std=c11 -Wall -Wextra -O2 "$APP_SRC" -o "$APP_DST"
+"$CC" -D_GNU_SOURCE -std=c11 -Wall -Wextra -O2 "$APP_SRC" -o "$APP_DST"
 chmod +x "$APP_DST"
 
 echo "pre-build: modulo clook compilado e clook-teste instalado em /usr/bin/clook-teste"
