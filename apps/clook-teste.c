@@ -8,9 +8,9 @@
 
 int main(int argc, char *argv[])
 {
-    if (argc != 7) {
-        fprintf(stderr, "Uso: %s <arquivo> <tam_bloco_bytes> <tam_disco_blocos> <num_operacoes> <pct_escrita> <num_processos>\n", argv[0]);
-        fprintf(stderr, "Exemplo: %s /dev/sdb 4096 1024 1000 30 4\n", argv[0]);
+    if (argc != 9) {
+        fprintf(stderr, "Uso: %s <arquivo> <tam_bloco_bytes> <tam_disco_blocos> <num_operacoes> <pct_escrita> <tam_min_req> <tam_max_req> <num_processos>\n", argv[0]);
+        fprintf(stderr, "Exemplo: %s /dev/sdb 4096 1024 1000 30 1024 4096 4\n", argv[0]);
         return 1;
     }
 
@@ -19,11 +19,18 @@ int main(int argc, char *argv[])
     long disk_blocks = atol(argv[3]);
     int operations = atoi(argv[4]);
     int pct_write = atoi(argv[5]);
-    int num_processes = atoi(argv[6]);
+    long min_req_size = atol(argv[6]); 
+    long max_req_size = atol(argv[7]); 
+    int num_processes = atoi(argv[8]);
 
-    char *buffer = malloc(block_size);
-    if (!buffer) {
-        perror("malloc");
+    if (min_req_size > max_req_size || max_req_size > block_size) {
+        fprintf(stderr, "Erro: tam_min_req deve ser <= tam_max_req e tam_max_req deve ser <= tam_bloco_bytes\n");
+        return 1;
+    }
+
+    char *buffer = NULL;
+    if (posix_memalign((void **)&buffer, 4096, block_size) != 0) {
+        perror("posix_memalign");
         return 1;
     }
     memset(buffer, 0xAA, block_size);
@@ -41,7 +48,7 @@ int main(int argc, char *argv[])
         if (pid == 0) { 
             srand(time(NULL) ^ (getpid() << 16));
 
-            int fd = open(filename, O_RDWR | O_DIRECT); /
+            int fd = open(filename, O_RDWR | O_DIRECT);
             if (fd < 0) {
                 fd = open(filename, O_RDWR); 
                 if (fd < 0) {
@@ -57,11 +64,12 @@ int main(int argc, char *argv[])
                     perror("lseek");
                     break;
                 }
+                long req_size = min_req_size + (rand() % (max_req_size - min_req_size + 1));
 
                 if ((rand() % 100) < pct_write) {
-                    if (write(fd, buffer, block_size) < 0) perror("write");
+                    if (write(fd, buffer, req_size) < 0) perror("write");
                 } else {
-                    if (read(fd, buffer, block_size) < 0) perror("read");
+                    if (read(fd, buffer, req_size) < 0) perror("read");
                 }
             }
 
