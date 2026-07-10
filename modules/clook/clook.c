@@ -487,9 +487,11 @@ static void clook_exit_sched(struct elevator_queue *e)
  * se elas fossem atendidas exatamente na ordem em que chegaram.
  *
  * Se a fila atingir max_requests, marca queue_full e agenda a execucao
- * da fila de hardware para iniciar o despacho. Enquanto houver requisicoes
- * pendentes, o temporizador de timeout e (re)armado, garantindo que o
- * lote nunca espere mais que timeout_ms para ser despachado.
+ * da fila de hardware para iniciar o despacho. O temporizador de timeout
+ * e armado quando chega a primeira requisicao de um lote (se ja nao
+ * estiver ativo), garantindo que nenhuma requisicao espere mais que
+ * timeout_ms para ser despachada. Requisicoes de flush (fsync) forcam
+ * o dreno imediato do lote.
  *
  * Se a alocacao de um no falhar (GFP_ATOMIC, pois estamos sob spinlock),
  * a requisicao e devolvida a lista de entrada em vez de ser perdida.
@@ -526,6 +528,20 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
 
         entry->rq = rq;
         entry->sector = blk_rq_pos(rq);
+
+        /*
+         * Requisicao de flush (fsync/barreira): o processo emissor esta
+         * bloqueado esperando por ela e nao vai gerar mais nada ate que
+         * complete. Segura-la ate encher a fila ou estourar o timeout
+         * so adiciona latencia; forca o dreno imediato do lote.
+         */
+        if (op_is_flush(rq->cmd_flags)) {
+            cd->timeout_expired = true;
+            run_queue = true;
+
+            if (cd->debug)
+                pr_info("clook: flush recebido, forcando despacho do lote\n");
+        }
 
         /* Insercao no final: a fila interna mantem a ordem de chegada */
         INIT_LIST_HEAD(&entry->list);
@@ -566,13 +582,16 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
     }
 
     /*
-     * Ha requisicoes pendentes: (re)arma o gatilho por tempo, contado a
-     * partir da ultima requisicao recebida. O gatilho timeout_expired NAO
-     * e limpo aqui: se o timeout ja estourou, o lote deve ser drenado ate
-     * o fim mesmo que novas requisicoes cheguem durante o despacho (a
-     * flag so e limpa em clook_has_work quando a fila esvazia).
+     * Ha requisicoes pendentes e o timer ainda nao esta armado: arma o
+     * gatilho por tempo, contado a partir da PRIMEIRA requisicao do lote.
+     * Rearmar a cada insercao (comportamento antigo) empurrava o prazo
+     * para frente a cada chegada, fazendo a primeira requisicao esperar
+     * bem mais que timeout_ms. O gatilho timeout_expired NAO e limpo
+     * aqui: se o timeout ja estourou, o lote deve ser drenado ate o fim
+     * mesmo que novas requisicoes cheguem durante o despacho (a flag e
+     * limpa quando a fila esvazia, no dispatch, ou em clook_has_work).
      */
-    if (cd->nr_requests > 0)
+    if (cd->nr_requests > 0 && !hrtimer_active(&cd->timer))
         restart_timer = true;
 
     spin_unlock_irqrestore(&cd->lock, irqflags);
@@ -682,6 +701,20 @@ static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx)
     cd->head_position = pos;
     cd->nr_requests--;
     cd->dispatched++;
+
+    /*
+     * Lote totalmente drenado: limpa os gatilhos e cancela o timer
+     * pendente. Sem isso, o timer da ultima insercao dispararia com a
+     * fila ja vazia, marcando timeout_expired "fantasma" que poderia
+     * vazar para o proximo lote (despacho prematuro de 1 requisicao)
+     * alem de poluir o log com "timeout expirado" tardio.
+     * hrtimer_try_to_cancel() e seguro em contexto atomico (nao dorme).
+     */
+    if (cd->nr_requests == 0) {
+        cd->queue_full = false;
+        cd->timeout_expired = false;
+        hrtimer_try_to_cancel(&cd->timer);
+    }
 
     list_del_init(&best->list);
     kfree(best);

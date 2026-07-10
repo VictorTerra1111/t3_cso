@@ -200,11 +200,8 @@ int main(int argc, char *argv[])
         if (pid == 0)
             break;
         p++;
-
     }
 
-
-        printf("pau: %d\n", p);
     if (pid < 0) {
         perror("fork");
         free(allocated_buffer);
