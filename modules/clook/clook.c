@@ -88,8 +88,13 @@ static unsigned int timeout_ms = 50;
 static bool debug = false;
 
 module_param(queue_size, uint, 0644);
+MODULE_PARM_DESC(queue_size, "Numero de requisicoes acumuladas antes do despacho C-LOOK");
+
 module_param(timeout_ms, uint, 0644);
+MODULE_PARM_DESC(timeout_ms, "Tempo maximo de espera da fila, em milissegundos");
+
 module_param(debug, bool, 0644);
+MODULE_PARM_DESC(debug, "Habilita logs de depuracao no log do kernel");
 
 static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
 {
@@ -109,8 +114,20 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     INIT_LIST_HEAD(&cd->queue);
     spin_lock_init(&cd->lock);
 
-    cd->max_requests = queue_size;
-    cd->timeout_ms = timeout_ms;
+    if (queue_size == 0) {
+        pr_warn("clook: queue_size=0 invalido; usando 50\n");
+        cd->max_requests = 50;
+    } else {
+        cd->max_requests = queue_size;
+    }
+
+    if (timeout_ms == 0) {
+        pr_warn("clook: timeout_ms=0 invalido; usando 50 ms\n");
+        cd->timeout_ms = 50;
+    } else {
+        cd->timeout_ms = timeout_ms;
+    }
+
     cd->debug = debug;
 
     cd->head_position = 0;
@@ -141,7 +158,8 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     q->nr_requests = 128;
     q->elevator = eq;
 
-    pr_info("clook: scheduler initialized\n");
+    pr_info("clook: scheduler initialized queue_size=%u timeout_ms=%u debug=%d\n",
+            cd->max_requests, cd->timeout_ms, cd->debug);
 
     return 0;
 }
@@ -150,6 +168,7 @@ static void clook_exit_sched(struct elevator_queue *e)
 {
     struct clook_data *cd;
     struct clook_request *entry, *tmp;
+    unsigned long long economy;
 
     cd = e->elevator_data;
 
@@ -163,12 +182,15 @@ static void clook_exit_sched(struct elevator_queue *e)
         kfree(entry);
     }
 
-    pr_info("clook: scheduler removed\n");
-    pr_info("clook: FCFS distance      : %llu\n", cd->fcfs_distance);
-    pr_info("clook: CLOOK distance     : %llu\n", cd->clook_distance);
-    pr_info("clook: Requests received  : %lu\n", cd->received);
-    pr_info("clook: Requests dispatched: %lu\n", cd->dispatched);
-    pr_info("clook: Circular jumps     : %lu\n", cd->circular_jumps);
+    if (cd->fcfs_distance > cd->clook_distance)
+        economy = cd->fcfs_distance - cd->clook_distance;
+    else
+        economy = 0;
+
+    pr_info("clook: removendo escalonador: total despachado=%lu, setores FCFS=%llu, setores C-LOOK=%llu, economia=%llu\n",
+            cd->dispatched, cd->fcfs_distance, cd->clook_distance, economy);
+    pr_info("clook: requisicoes recebidas=%lu, saltos circulares=%lu\n",
+            cd->received, cd->circular_jumps);
 
     kfree(cd);
 }
@@ -179,8 +201,11 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
     struct request *rq, *next;
     struct clook_request *entry;
     unsigned long irqflags;
+    bool run_queue = false;
+    bool restart_timer = false;
 
     cd = hctx->queue->elevator->elevator_data;
+    (void)flags;
 
     spin_lock_irqsave(&cd->lock, irqflags);
 
@@ -223,17 +248,25 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
 
     if (cd->nr_requests >= cd->max_requests) {
         cd->queue_full = true;
-        blk_mq_run_hw_queue(hctx, true);
+        run_queue = true;
+
+        if (cd->debug)
+            pr_info("clook: fila cheia (%u/%u), solicitando despacho\n",
+                    cd->nr_requests, cd->max_requests);
     }
 
     if (cd->nr_requests > 0) {
         cd->timeout_expired = false;
-
-        hrtimer_try_to_cancel(&cd->timer);
-        hrtimer_start(&cd->timer, ms_to_ktime(cd->timeout_ms), HRTIMER_MODE_REL);
+        restart_timer = true;
     }
 
     spin_unlock_irqrestore(&cd->lock, irqflags);
+
+    if (restart_timer)
+        hrtimer_start(&cd->timer, ms_to_ktime(cd->timeout_ms), HRTIMER_MODE_REL);
+
+    if (run_queue)
+        blk_mq_run_hw_queue(hctx, true);
 }
 
 static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx)
@@ -276,7 +309,9 @@ static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx)
         cd->circular_jumps++;
 
         if (cd->debug)
-            pr_info("clook: salto circular %llu -> %llu\n", (unsigned long long)cd->head_position, (unsigned long long)best->sector);
+            pr_info("clook: salto circular %llu -> %llu; direcao=crescente\n",
+                    (unsigned long long)cd->head_position,
+                    (unsigned long long)best->sector);
     }
 
     rq = best->rq;
@@ -305,7 +340,8 @@ static struct request *clook_dispatch_request(struct blk_mq_hw_ctx *hctx)
     spin_unlock_irqrestore(&cd->lock, flags);
 
     if (cd->debug)
-        pr_info("clook: CLOOK: %llu\n", (unsigned long long)pos);
+        pr_info("clook: CLOOK: setor=%llu direcao=crescente\n",
+                (unsigned long long)pos);
 
     return rq;
 }
@@ -334,6 +370,7 @@ static bool clook_has_work(struct blk_mq_hw_ctx *hctx)
 
 static void clook_finish_request(struct request *rq)
 {
+    (void)rq;
     return;
 }
 
