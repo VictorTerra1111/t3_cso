@@ -28,6 +28,13 @@
  *   timeout_ms - tempo maximo de espera da fila, em milissegundos
  *   debug      - habilita logs de depuracao no log do kernel
  *
+ * Os parametros queue_size e timeout_ms sao dinamicos: alem de definidos
+ * na carga (insmod clook.ko queue_size=20 timeout_ms=100), podem ser
+ * alterados em tempo de execucao escrevendo nos arquivos de
+ * /sys/module/clook/parameters/. A escrita dispara um callback
+ * (module_param_cb) que valida o valor e o propaga imediatamente para
+ * todas as instancias ativas do escalonador, mantidas em uma lista global.
+ *
  * Autores: Bruno, Joao Victor, Lucas e Cleysso
  */
 
@@ -113,6 +120,9 @@ static struct elevator_type clook = {
  * @circular_jumps:   quantidade de saltos circulares realizados
  * @hctx:             contexto de hardware mais recente, guardado para que
  *                    o callback do timer possa reativar a fila
+ * @instance_node:    encadeamento na lista global clook_instances, usado
+ *                    pelos setters de parametro para propagar valores
+ *                    novos a esta instancia em tempo de execucao
  */
 struct clook_data {
     struct list_head queue;
@@ -146,6 +156,8 @@ struct clook_data {
     unsigned long circular_jumps;
 
     struct blk_mq_hw_ctx *hctx;
+
+    struct list_head instance_node;
 };
 
 /**
@@ -167,10 +179,142 @@ static unsigned int queue_size = 50;
 static unsigned int timeout_ms = 50;
 static bool debug = false;
 
-module_param(queue_size, uint, 0644);
+/*
+ * Instancias ativas do escalonador (uma por dispositivo com o clook
+ * selecionado). A lista permite que uma escrita em
+ * /sys/module/clook/parameters/{queue_size,timeout_ms} seja propagada em
+ * tempo de execucao para cada clook_data ja inicializado, em vez de ser
+ * lida uma unica vez em clook_init_sched.
+ *
+ * A lista so e manipulada em contexto de processo (init_sched, exit_sched
+ * e os setters de parametro), portanto um spin_lock simples basta para
+ * protege-la. O lock de cada instancia (cd->lock) continua sendo tomado
+ * com irqsave, pois o hrtimer tambem o usa. Ordem de aquisicao quando
+ * ambos sao necessarios: clook_instances_lock -> cd->lock.
+ */
+static LIST_HEAD(clook_instances);
+static DEFINE_SPINLOCK(clook_instances_lock);
+
+/**
+ * clook_queue_size_set - callback de escrita do parametro queue_size
+ * @val: texto escrito pelo usuario no arquivo do sysfs
+ * @kp:  descritor do parametro (aponta para a global queue_size)
+ *
+ * Chamado tanto na carga do modulo (insmod clook.ko queue_size=N) quanto
+ * a cada escrita em /sys/module/clook/parameters/queue_size. Valida o
+ * valor (rejeita 0 com -EINVAL), atualiza a variavel global e propaga o
+ * novo limite para todas as instancias ativas. Se, com o novo limite, a
+ * ocupacao atual da fila de alguma instancia ja caracterizar "fila cheia"
+ * (ex.: encolher de 50 para 10 com 30 requisicoes pendentes), o despacho
+ * do lote e disparado imediatamente.
+ *
+ * Retorna: 0 em caso de sucesso ou codigo de erro negativo.
+ */
+static int clook_queue_size_set(const char *val, const struct kernel_param *kp)
+{
+    struct clook_data *cd;
+    unsigned int new_size;
+    int ret;
+
+    ret = kstrtouint(val, 0, &new_size);
+    if (ret)
+        return ret;
+
+    if (new_size == 0)
+        return -EINVAL;
+
+    /* Atualiza a global: proximos init_sched ja nascem com o valor novo */
+    ret = param_set_uint(val, kp);
+    if (ret)
+        return ret;
+
+    /* Propaga para as instancias ja ativas */
+    spin_lock(&clook_instances_lock);
+    list_for_each_entry(cd, &clook_instances, instance_node) {
+        struct blk_mq_hw_ctx *hctx = NULL;
+        unsigned long flags;
+
+        spin_lock_irqsave(&cd->lock, flags);
+        cd->max_requests = new_size;
+
+        if (cd->nr_requests >= cd->max_requests) {
+            cd->queue_full = true;
+            hctx = cd->hctx;
+        }
+        spin_unlock_irqrestore(&cd->lock, flags);
+
+        /* async=true: apenas agenda o trabalho, seguro sob spinlock */
+        if (hctx)
+            blk_mq_run_hw_queue(hctx, true);
+    }
+    spin_unlock(&clook_instances_lock);
+
+    pr_info("clook: queue_size ajustado em tempo de execucao para %u\n",
+            new_size);
+
+    return 0;
+}
+
+/**
+ * clook_timeout_ms_set - callback de escrita do parametro timeout_ms
+ * @val: texto escrito pelo usuario no arquivo do sysfs
+ * @kp:  descritor do parametro (aponta para a global timeout_ms)
+ *
+ * Valida o valor (rejeita 0 com -EINVAL), atualiza a global e propaga o
+ * novo tempo maximo de espera para as instancias ativas. O valor passa a
+ * valer no proximo (re)arme do temporizador, que ocorre a cada insercao
+ * de requisicoes; um timer ja armado completa a contagem antiga.
+ *
+ * Retorna: 0 em caso de sucesso ou codigo de erro negativo.
+ */
+static int clook_timeout_ms_set(const char *val, const struct kernel_param *kp)
+{
+    struct clook_data *cd;
+    unsigned int new_ms;
+    int ret;
+
+    ret = kstrtouint(val, 0, &new_ms);
+    if (ret)
+        return ret;
+
+    if (new_ms == 0)
+        return -EINVAL;
+
+    ret = param_set_uint(val, kp);
+    if (ret)
+        return ret;
+
+    spin_lock(&clook_instances_lock);
+    list_for_each_entry(cd, &clook_instances, instance_node) {
+        unsigned long flags;
+
+        spin_lock_irqsave(&cd->lock, flags);
+        cd->timeout_ms = new_ms;
+        spin_unlock_irqrestore(&cd->lock, flags);
+    }
+    spin_unlock(&clook_instances_lock);
+
+    pr_info("clook: timeout_ms ajustado em tempo de execucao para %u ms\n",
+            new_ms);
+
+    return 0;
+}
+
+/* Operacoes dos parametros dinamicos: escrita customizada, leitura padrao */
+static const struct kernel_param_ops clook_queue_size_ops = {
+    .set = clook_queue_size_set,
+    .get = param_get_uint,
+};
+
+static const struct kernel_param_ops clook_timeout_ms_ops = {
+    .set = clook_timeout_ms_set,
+    .get = param_get_uint,
+};
+
+module_param_cb(queue_size, &clook_queue_size_ops, &queue_size, 0644);
 MODULE_PARM_DESC(queue_size, "Numero de requisicoes acumuladas antes do despacho C-LOOK");
 
-module_param(timeout_ms, uint, 0644);
+module_param_cb(timeout_ms, &clook_timeout_ms_ops, &timeout_ms, 0644);
 MODULE_PARM_DESC(timeout_ms, "Tempo maximo de espera da fila, em milissegundos");
 
 module_param(debug, bool, 0644);
@@ -212,14 +356,14 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
 
     /* Validacao dos parametros: valores invalidos caem no padrao (50) */
     if (queue_size == 0) {
-        pr_warn("clook: queue_size=0 invalido; usando 50\n");
+        pr_warn("clook: queue_size= %u invalido; usando 50\n", queue_size);
         cd->max_requests = 50;
     } else {
         cd->max_requests = queue_size;
     }
 
     if (timeout_ms <= 0) {
-        pr_warn("clook: timeout_ms= %d invalido; usando 50 ms\n", timeout_ms);
+        pr_warn("clook: timeout_ms= %u invalido; usando 50 ms\n", timeout_ms);
         cd->timeout_ms = 50;
     } else {
         cd->timeout_ms = timeout_ms;
@@ -260,6 +404,15 @@ static int clook_init_sched(struct request_queue *q, struct elevator_type *e)
     q->nr_requests = 128;
     q->elevator = eq;
 
+    /*
+     * Registra a instancia na lista global: a partir daqui, escritas em
+     * /sys/module/clook/parameters/ passam a alcancar este clook_data.
+     */
+    INIT_LIST_HEAD(&cd->instance_node);
+    spin_lock(&clook_instances_lock);
+    list_add_tail(&cd->instance_node, &clook_instances);
+    spin_unlock(&clook_instances_lock);
+
     pr_info("clook: scheduler initialized queue_size=%u timeout_ms=%u debug=%d\n",
             cd->max_requests, cd->timeout_ms, cd->debug);
 
@@ -286,6 +439,14 @@ static void clook_exit_sched(struct elevator_queue *e)
 
     if (!cd)
         return;
+
+    /*
+     * Sai da lista global antes de destruir qualquer coisa: os setters de
+     * parametro deixam de enxergar esta instancia imediatamente.
+     */
+    spin_lock(&clook_instances_lock);
+    list_del_init(&cd->instance_node);
+    spin_unlock(&clook_instances_lock);
 
     /* Garante que o callback do timer nao rodara apos a liberacao */
     hrtimer_cancel(&cd->timer);
@@ -404,11 +565,15 @@ static void clook_insert_requests(struct blk_mq_hw_ctx *hctx, struct list_head *
                     cd->nr_requests, cd->max_requests);
     }
 
-    /* Ha requisicoes pendentes: (re)arma o gatilho por tempo */
-    if (cd->nr_requests > 0) {
-        cd->timeout_expired = false;
+    /*
+     * Ha requisicoes pendentes: (re)arma o gatilho por tempo, contado a
+     * partir da ultima requisicao recebida. O gatilho timeout_expired NAO
+     * e limpo aqui: se o timeout ja estourou, o lote deve ser drenado ate
+     * o fim mesmo que novas requisicoes cheguem durante o despacho (a
+     * flag so e limpa em clook_has_work quando a fila esvazia).
+     */
+    if (cd->nr_requests > 0)
         restart_timer = true;
-    }
 
     spin_unlock_irqrestore(&cd->lock, irqflags);
 

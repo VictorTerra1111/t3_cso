@@ -22,10 +22,10 @@ static void usage(const char *prog)
             "<num_processos> [aleatorio|sequencial]\n",
             prog);
     fprintf(stderr,
-            "Exemplo aleatorio:   %s /dev/vdb 4096 1024 1000 30 512 4096 8\n",
+            "Exemplo aleatorio:   %s /dev/sdb 4096 1024 1000 30 512 4096 8\n",
             prog);
     fprintf(stderr,
-            "Exemplo sequencial:  %s /dev/vdb 4096 1024 1000 30 512 4096 4 sequencial\n",
+            "Exemplo sequencial:  %s /dev/sdb 4096 1024 1000 30 512 4096 4 sequencial\n",
             prog);
 }
 
@@ -193,67 +193,74 @@ int main(int argc, char *argv[])
     printf("O_DIRECT: %s\n", use_direct_io ? "habilitado quando suportado" : "desabilitado");
     fflush(NULL);
 
-    for (long p = 0; p < num_processes; p++) {
-        pid_t pid = fork();
+    pid_t pid;
+    long p = 0;
+    for (long i = 0; p < num_processes; i++) {
+        pid = fork();
+        if (pid == 0)
+            break;
+        p++;
 
-        if (pid < 0) {
-            perror("fork");
+    }
+
+
+        printf("pau: %d\n", p);
+    if (pid < 0) {
+        perror("fork");
+        free(allocated_buffer);
+        return 1;
+    }
+
+    if (pid == 0) {
+        unsigned int seed = (unsigned int)time(NULL) ^ ((unsigned int)getpid() << 16) ^ (unsigned int)p;
+        int fd = open_target(filename, use_direct_io);
+
+        if (fd < 0) {
+            perror("open");
             free(allocated_buffer);
-            return 1;
+            exit(1);
         }
 
-        if (pid == 0) {
-            unsigned int seed = (unsigned int)time(NULL) ^ ((unsigned int)getpid() << 16) ^ (unsigned int)p;
-            int fd = open_target(filename, use_direct_io);
+        for (long i = 0; i < operations; i++) {
+            long block;
+            long req_size;
+            off_t offset;
+            int is_write;
 
-            if (fd < 0) {
-                perror("open");
+            req_size = random_aligned_size(&seed, req_min, req_max,
+                                            use_direct_io ? DIRECT_IO_ALIGNMENT : 1);
+
+            if (sequential)
+                block = (p * operations + i) % disk_blocks;
+            else
+                block = (long)(rand_r(&seed) % (unsigned int)disk_blocks);
+
+            offset = (off_t)block * (off_t)block_size;
+            is_write = ((long)(rand_r(&seed) % 100U) < pct_write);
+
+            memset(buffer, (int)(0xA0 + (p % 32)), (size_t)req_size);
+
+            if (lseek(fd, offset, SEEK_SET) == (off_t)-1) {
+                perror("lseek");
+                close(fd);
                 free(allocated_buffer);
                 exit(1);
             }
 
-            for (long i = 0; i < operations; i++) {
-                long block;
-                long req_size;
-                off_t offset;
-                int is_write;
-
-                req_size = random_aligned_size(&seed, req_min, req_max,
-                                               use_direct_io ? DIRECT_IO_ALIGNMENT : 1);
-
-                if (sequential)
-                    block = (p * operations + i) % disk_blocks;
-                else
-                    block = (long)(rand_r(&seed) % (unsigned int)disk_blocks);
-
-                offset = (off_t)block * (off_t)block_size;
-                is_write = ((long)(rand_r(&seed) % 100U) < pct_write);
-
-                memset(buffer, (int)(0xA0 + (p % 32)), (size_t)req_size);
-
-                if (lseek(fd, offset, SEEK_SET) == (off_t)-1) {
-                    perror("lseek");
-                    close(fd);
-                    free(allocated_buffer);
-                    exit(1);
-                }
-                long req_size = min_req_size + (rand() % (max_req_size - min_req_size + 1));
-
-                if (do_io(fd, buffer, (size_t)req_size, is_write) != 0) {
-                    perror(is_write ? "write" : "read");
-                    close(fd);
-                    free(allocated_buffer);
-                    exit(1);
-                }
+            if (do_io(fd, buffer, (size_t)req_size, is_write) != 0) {
+                perror(is_write ? "write" : "read");
+                close(fd);
+                free(allocated_buffer);
+                exit(1);
             }
-
-            if (fsync(fd) != 0)
-                perror("fsync");
-
-            close(fd);
-            free(allocated_buffer);
-            exit(0);
         }
+
+        if (fsync(fd) != 0)
+            perror("fsync");
+
+        close(fd);
+        free(allocated_buffer);
+        exit(0);
     }
 
     for (long p = 0; p < num_processes; p++) {
